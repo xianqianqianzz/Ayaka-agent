@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
 import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import ChatBox from '../components/ChatBox'
@@ -16,6 +16,11 @@ interface Model {
   provider_id: number
   name: string
   display_name: string
+  capability: string
+}
+
+interface FetchedModel {
+  id: string
   capability: string
 }
 
@@ -48,6 +53,9 @@ export default function Models() {
   const [error, setError] = useState<string | null>(null)
   const [pForm, setPForm] = useState<ProviderForm>(emptyProviderForm)
   const [mForm, setMForm] = useState<ModelForm>(emptyModelForm)
+  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([])
+  const [selectedFetched, setSelectedFetched] = useState('')
+  const [fetching, setFetching] = useState(false)
 
   const loadProviders = useCallback(async () => {
     setProviders(await api<Provider[]>('/api/v1/providers'))
@@ -94,6 +102,38 @@ export default function Models() {
     setPForm({ id: p.id, name: p.name, kind: p.kind, base_url: p.base_url, api_key: '' })
   }
 
+  async function fetchModels() {
+    if (!mForm.provider_id) return
+    setError(null)
+    setFetching(true)
+    try {
+      const list = await api<FetchedModel[]>(`/api/v1/providers/${mForm.provider_id}/models`)
+      setFetchedModels(list)
+      setSelectedFetched('')
+    } catch (err) {
+      setFetchedModels([])
+      setSelectedFetched('')
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  function handleProviderChange(e: ChangeEvent<HTMLSelectElement>) {
+    setMForm((prev) => ({ ...prev, provider_id: Number(e.target.value), name: '', display_name: '' }))
+    setFetchedModels([])
+    setSelectedFetched('')
+  }
+
+  function onPickFetched(e: ChangeEvent<HTMLSelectElement>) {
+    const id = e.target.value
+    setSelectedFetched(id)
+    const item = fetchedModels.find((f) => f.id === id)
+    if (item) {
+      setMForm((prev) => ({ ...prev, name: item.id, display_name: item.id, capability: item.capability }))
+    }
+  }
+
   async function submitModel(e: FormEvent) {
     e.preventDefault()
     setError(null)
@@ -110,6 +150,8 @@ export default function Models() {
         await api('/api/v1/models', { method: 'POST', body: JSON.stringify(body) })
       }
       setMForm(emptyModelForm)
+      setFetchedModels([])
+      setSelectedFetched('')
       await loadModels()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -124,6 +166,8 @@ export default function Models() {
 
   function editModel(m: Model) {
     setMForm({ id: m.id, provider_id: m.provider_id, name: m.name, display_name: m.display_name, capability: m.capability })
+    setFetchedModels([])
+    setSelectedFetched('')
   }
 
   const providerName = (id: number) => providers.find((p) => p.id === id)?.name ?? `#${id}`
@@ -214,43 +258,58 @@ export default function Models() {
 
         <section className="mb-6 rounded-2xl bg-white/85 p-5 shadow backdrop-blur">
           <h2 className="mb-3 text-lg font-semibold text-ayaka-deep">模型</h2>
-          <form onSubmit={submitModel} className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-5">
-            <select
-              value={mForm.provider_id}
-              onChange={(e) => setMForm({ ...mForm, provider_id: Number(e.target.value) })}
-              required
-              className="input"
-            >
-              <option value={0} disabled>选择 Provider</option>
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-            <input
-              placeholder="模型标识，如 deepseek-chat"
-              value={mForm.name}
-              onChange={(e) => setMForm({ ...mForm, name: e.target.value })}
-              required
-              className="input"
-            />
-            <input
-              placeholder="显示名（可选）"
-              value={mForm.display_name}
-              onChange={(e) => setMForm({ ...mForm, display_name: e.target.value })}
-              className="input"
-            />
-            <select value={mForm.capability} onChange={(e) => setMForm({ ...mForm, capability: e.target.value })} className="input">
-              {CAPABILITIES.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-            <div className="flex gap-2">
-              <button type="submit" className="btn-primary flex-1">{mForm.id ? '保存' : '新增'}</button>
-              {mForm.id && (
-                <button type="button" onClick={() => setMForm(emptyModelForm)} className="btn-secondary">
-                  取消
-                </button>
+          <form onSubmit={submitModel} className="mb-4 space-y-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+              <select value={mForm.provider_id} onChange={handleProviderChange} required className="input">
+                <option value={0} disabled>选择 Provider</option>
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={fetchModels}
+                disabled={!mForm.provider_id || fetching}
+                className="btn-secondary disabled:opacity-50"
+              >
+                {fetching ? '获取中…' : '获取模型'}
+              </button>
+              {fetchedModels.length > 0 && (
+                <select value={selectedFetched} onChange={onPickFetched} className="input sm:col-span-2">
+                  <option value="">从服务商选择模型标识</option>
+                  {fetchedModels.map((f) => (
+                    <option key={f.id} value={f.id}>{f.id}（{f.capability}）</option>
+                  ))}
+                </select>
               )}
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-5">
+              <input
+                placeholder="模型标识，如 deepseek-chat"
+                value={mForm.name}
+                onChange={(e) => setMForm({ ...mForm, name: e.target.value })}
+                required
+                className="input"
+              />
+              <input
+                placeholder="显示名（可选）"
+                value={mForm.display_name}
+                onChange={(e) => setMForm({ ...mForm, display_name: e.target.value })}
+                className="input"
+              />
+              <select value={mForm.capability} onChange={(e) => setMForm({ ...mForm, capability: e.target.value })} className="input">
+                {CAPABILITIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+              <div className="flex gap-2 sm:col-span-2">
+                <button type="submit" className="btn-primary flex-1">{mForm.id ? '保存' : '新增'}</button>
+                {mForm.id && (
+                  <button type="button" onClick={() => { setMForm(emptyModelForm); setFetchedModels([]); setSelectedFetched('') }} className="btn-secondary">
+                    取消
+                  </button>
+                )}
+              </div>
             </div>
           </form>
 

@@ -50,6 +50,11 @@ class ModelOut(BaseModel):
     created_at: datetime
 
 
+class ProviderModelItem(BaseModel):
+    id: str
+    capability: str
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str

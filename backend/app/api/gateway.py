@@ -18,6 +18,7 @@ from app.schemas.gateway import (
     ModelOut,
     ModelUpdate,
     ProviderCreate,
+    ProviderModelItem,
     ProviderOut,
     ProviderUpdate,
 )
@@ -99,6 +100,59 @@ async def delete_provider(
     await db.delete(provider)
     await db.commit()
     return {"ok": True}
+
+
+CAPABILITY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("embedding", ("embedding", "embed", "bge", "gte-")),
+    ("tts", ("tts", "speech", "voice", "cosyvoice")),
+    ("asr", ("whisper", "asr", "transcribe", "speech-to-text", "sensevoice")),
+    ("text-to-image", ("image", "dall-e", "dalle", "sdxl", "flux", "stable-diffusion", "draw")),
+    ("text-to-video", ("video", "sora", "runway", "kling", "veo")),
+]
+
+
+def infer_capability(model_id: str) -> str:
+    m = model_id.lower()
+    for capability, keywords in CAPABILITY_KEYWORDS:
+        if any(k in m for k in keywords):
+            return capability
+    return "text-chat"
+
+
+@router.get("/providers/{provider_id}/models", response_model=list[ProviderModelItem])
+async def fetch_provider_models(
+    provider_id: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+):
+    provider = await db.get(Provider, provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider 不存在")
+    api_key = decrypt_api_key(provider.api_key) if provider.api_key else None
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    url = f"{provider.base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=30.0)) as client:
+            resp = await client.get(url, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"请求服务商失败：{exc}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"获取模型列表失败（HTTP {resp.status_code}）：{resp.text[:500]}")
+    try:
+        data = resp.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="服务商返回了非 JSON 响应")
+    items = data.get("data", []) if isinstance(data, dict) else []
+    result: list[ProviderModelItem] = []
+    seen: set[str] = set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        mid = it.get("id")
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        result.append(ProviderModelItem(id=mid, capability=infer_capability(mid)))
+    result.sort(key=lambda x: x.id)
+    return result
 
 
 # ---------- Models ----------
