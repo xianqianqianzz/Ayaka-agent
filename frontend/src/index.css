@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ayaka-ice: #9ed8f0;
+  --color-ayaka-blue: #6ba8d6;
+  --color-ayaka-deep: #3a5a7a;
+}

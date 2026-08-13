@@ -1,0 +1,19 @@
+node_modules/
+out/
+dist/
+release/
+.env
+*.log
+.DS_Store
+Thumbs.db
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 参考项目（第三方，不纳入版本管理）
+参考项目/
+
+# Claude Code 本地配置
+.claude/
