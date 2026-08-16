@@ -44,7 +44,11 @@ def _provider_out(p: Provider) -> ProviderOut:
 async def list_providers(
     user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    providers = (await db.scalars(select(Provider).order_by(Provider.id))).all()
+    providers = (
+        await db.scalars(
+            select(Provider).where(Provider.user_id == user.id).order_by(Provider.id)
+        )
+    ).all()
     return [_provider_out(p) for p in providers]
 
 
@@ -52,10 +56,13 @@ async def list_providers(
 async def create_provider(
     data: ProviderCreate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    exists = await db.scalar(select(Provider).where(Provider.name == data.name))
+    exists = await db.scalar(
+        select(Provider).where(Provider.user_id == user.id, Provider.name == data.name)
+    )
     if exists:
         raise HTTPException(status_code=409, detail="Provider 名称已存在")
     provider = Provider(
+        user_id=user.id,
         name=data.name,
         kind=data.kind,
         base_url=data.base_url,
@@ -74,10 +81,20 @@ async def update_provider(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    provider = await db.get(Provider, provider_id)
+    provider = await db.scalar(
+        select(Provider).where(Provider.id == provider_id, Provider.user_id == user.id)
+    )
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider 不存在")
     if data.name is not None:
+        if data.name != provider.name:
+            exists = await db.scalar(
+                select(Provider).where(
+                    Provider.user_id == user.id, Provider.name == data.name
+                )
+            )
+            if exists:
+                raise HTTPException(status_code=409, detail="Provider 名称已存在")
         provider.name = data.name
     if data.kind is not None:
         provider.kind = data.kind
@@ -94,7 +111,9 @@ async def update_provider(
 async def delete_provider(
     provider_id: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    provider = await db.get(Provider, provider_id)
+    provider = await db.scalar(
+        select(Provider).where(Provider.id == provider_id, Provider.user_id == user.id)
+    )
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider 不存在")
     await db.delete(provider)
@@ -123,7 +142,9 @@ def infer_capability(model_id: str) -> str:
 async def fetch_provider_models(
     provider_id: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    provider = await db.get(Provider, provider_id)
+    provider = await db.scalar(
+        select(Provider).where(Provider.id == provider_id, Provider.user_id == user.id)
+    )
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider 不存在")
     api_key = decrypt_api_key(provider.api_key_enc) if provider.api_key_enc else None
@@ -162,14 +183,25 @@ async def fetch_provider_models(
 async def list_models(
     user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    return (await db.scalars(select(Model).order_by(Model.id))).all()
+    return (
+        await db.scalars(
+            select(Model)
+            .join(Provider)
+            .where(Provider.user_id == user.id)
+            .order_by(Model.id)
+        )
+    ).all()
 
 
 @router.post("/models", response_model=ModelOut, status_code=201)
 async def create_model(
     data: ModelCreate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    provider = await db.get(Provider, data.provider_id)
+    provider = await db.scalar(
+        select(Provider).where(
+            Provider.id == data.provider_id, Provider.user_id == user.id
+        )
+    )
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider 不存在")
     model = Model(
@@ -191,7 +223,11 @@ async def update_model(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    model = await db.get(Model, model_id)
+    model = await db.scalar(
+        select(Model)
+        .join(Provider)
+        .where(Model.id == model_id, Provider.user_id == user.id)
+    )
     if model is None:
         raise HTTPException(status_code=404, detail="模型不存在")
     if data.name is not None:
@@ -209,7 +245,11 @@ async def update_model(
 async def delete_model(
     model_id: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    model = await db.get(Model, model_id)
+    model = await db.scalar(
+        select(Model)
+        .join(Provider)
+        .where(Model.id == model_id, Provider.user_id == user.id)
+    )
     if model is None:
         raise HTTPException(status_code=404, detail="模型不存在")
     await db.delete(model)
@@ -220,10 +260,26 @@ async def delete_model(
 # ---------- Chat ----------
 
 
-async def _resolve_model(db: AsyncSession, name: str | None) -> Model | None:
+async def _resolve_model(db: AsyncSession, name: str | None, user_id: int) -> Model | None:
     if name:
-        return await db.scalar(select(Model).where(Model.name == name))
-    return await db.scalar(select(Model).where(Model.capability == "text-chat").order_by(Model.id))
+        return await db.scalar(
+            select(Model)
+            .join(Provider)
+            .where(Model.name == name, Provider.user_id == user_id)
+            .order_by(Model.priority, Model.id)
+            .limit(1)
+        )
+    return await db.scalar(
+        select(Model)
+        .join(Provider)
+        .where(
+            Provider.user_id == user_id,
+            Model.capability == "text-chat",
+            Model.enabled.is_(True),
+        )
+        .order_by(Model.priority, Model.id)
+        .limit(1)
+    )
 
 
 async def _stream_openai(url: str, api_key: str | None, payload: dict[str, Any]) -> AsyncIterator[str]:
@@ -263,7 +319,7 @@ async def _post_openai(url: str, api_key: str | None, payload: dict[str, Any]) -
 async def chat_completions(
     data: ChatRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    model = await _resolve_model(db, data.model)
+    model = await _resolve_model(db, data.model, user.id)
     if model is None:
         if data.model:
             raise HTTPException(status_code=404, detail=f"模型不存在：{data.model}")
