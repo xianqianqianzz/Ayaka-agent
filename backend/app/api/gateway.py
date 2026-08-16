@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any, AsyncIterator
 
 import httpx
@@ -9,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.core.security import decrypt_api_key, encrypt_api_key
+from app.services.streaming import ChatStreamState, consume_sse_line
+from app.services.usage import log_usage
 from app.models.model import Model
 from app.models.provider import Provider
 from app.models.user import User
@@ -306,13 +309,64 @@ async def _post_openai(url: str, api_key: str | None, payload: dict[str, Any]) -
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)) as client:
         resp = await client.post(url, json=payload, headers=headers)
     if "application/json" in resp.headers.get("content-type", ""):
         body = resp.json()
     else:
         body = {"raw": resp.text[:2000]}
     return JSONResponse(body, status_code=resp.status_code)
+
+
+def _post_openai_usage(resp: JSONResponse) -> tuple[dict[str, Any] | None, bool]:
+    if resp.status_code != 200:
+        return None, True
+    try:
+        body = json.loads(resp.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, True
+    usage = body.get("usage")
+    return usage if isinstance(usage, dict) else None, False
+
+
+async def _stream_openai_with_logging(
+    url: str,
+    api_key: str | None,
+    payload: dict[str, Any],
+    user_id: int,
+    model_id: int,
+    capability: str,
+    started: float,
+) -> AsyncIterator[str]:
+    state = ChatStreamState()
+    logged = False
+    try:
+        async for line in _stream_openai(url, api_key, payload):
+            consume_sse_line(line, state)
+            yield line
+        latency_ms = int((time.monotonic() - started) * 1000)
+        await log_usage(
+            user_id=user_id,
+            model_id=model_id,
+            capability=capability,
+            prompt_tokens=state.prompt_tokens,
+            completion_tokens=state.completion_tokens,
+            latency_ms=latency_ms,
+            status="error" if state.error else "success",
+        )
+        logged = True
+    finally:
+        if not logged:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            await log_usage(
+                user_id=user_id,
+                model_id=model_id,
+                capability=capability,
+                prompt_tokens=state.prompt_tokens,
+                completion_tokens=state.completion_tokens,
+                latency_ms=latency_ms,
+                status="error",
+            )
 
 
 @router.post("/chat/completions")
@@ -324,7 +378,11 @@ async def chat_completions(
         if data.model:
             raise HTTPException(status_code=404, detail=f"模型不存在：{data.model}")
         raise HTTPException(status_code=400, detail="没有可用的对话模型，请先在模型管理中添加")
-    provider = await db.get(Provider, model.provider_id)
+    provider = await db.scalar(
+        select(Provider).where(
+            Provider.id == model.provider_id, Provider.user_id == user.id
+        )
+    )
     if provider is None:
         raise HTTPException(status_code=404, detail="模型关联的 Provider 不存在")
 
@@ -341,10 +399,30 @@ async def chat_completions(
     api_key = decrypt_api_key(provider.api_key_enc) if provider.api_key_enc else None
     url = f"{provider.base_url.rstrip('/')}/chat/completions"
 
+    started = time.monotonic()
     if data.stream:
         return StreamingResponse(
-            _stream_openai(url, api_key, payload),
+            _stream_openai_with_logging(
+                url,
+                api_key,
+                payload,
+                user.id,
+                model.id,
+                model.capability,
+                started,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    return await _post_openai(url, api_key, payload)
+    resp = await _post_openai(url, api_key, payload)
+    usage, is_error = _post_openai_usage(resp)
+    await log_usage(
+        user_id=user.id,
+        model_id=model.id,
+        capability=model.capability,
+        prompt_tokens=usage.get("prompt_tokens") if usage else None,
+        completion_tokens=usage.get("completion_tokens") if usage else None,
+        latency_ms=int((time.monotonic() - started) * 1000),
+        status="error" if is_error else "success",
+    )
+    return resp

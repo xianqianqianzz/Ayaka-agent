@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass, field
+import time
 from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,6 +24,8 @@ from app.schemas.conversation import (
     MessageCreate,
     MessageOut,
 )
+from app.services.streaming import ChatStreamState, assistant_content, consume_sse_line
+from app.services.usage import log_usage
 
 router = APIRouter()
 
@@ -159,53 +161,6 @@ async def list_messages(
     return list(messages)
 
 
-@dataclass
-class ChatStreamState:
-    content_parts: list[str] = field(default_factory=list)
-    error: str | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-
-
-def _consume_sse_line(line: str, state: ChatStreamState) -> None:
-    data = line.strip()
-    if not data.startswith("data:"):
-        return
-    payload = data[5:].strip()
-    if not payload:
-        return
-    if payload == "[DONE]":
-        return
-    try:
-        obj = json.loads(payload)
-    except json.JSONDecodeError:
-        return
-    if "error" in obj:
-        err = obj["error"]
-        state.error = err.get("message") if isinstance(err, dict) else str(err)
-    usage = obj.get("usage")
-    if isinstance(usage, dict):
-        state.prompt_tokens = usage.get("prompt_tokens")
-        state.completion_tokens = usage.get("completion_tokens")
-    for choice in obj.get("choices") or []:
-        if not isinstance(choice, dict):
-            continue
-        delta = choice.get("delta") or {}
-        content = delta.get("content") if isinstance(delta, dict) else None
-        if isinstance(content, str):
-            state.content_parts.append(content)
-        message = choice.get("message") or {}
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, str):
-            state.content_parts.append(content)
-
-
-def _assistant_content(state: ChatStreamState) -> str:
-    if state.error:
-        return f"[错误] {state.error}"
-    return "".join(state.content_parts)
-
-
 async def _save_assistant_message(
     conversation_id: int, model_id: int, content: str
 ) -> None:
@@ -275,38 +230,62 @@ async def _stream_chat_and_persist(
     payload: dict[str, Any],
     conversation_id: int,
     model_id: int,
+    user_id: int,
+    capability: str,
+    started: float,
 ) -> AsyncIterator[str]:
     state = ChatStreamState()
     saved = False
     try:
         async for line in _stream_openai(url, api_key, payload):
-            _consume_sse_line(line, state)
+            consume_sse_line(line, state)
             yield line
+        latency_ms = int((time.monotonic() - started) * 1000)
         await _save_assistant_message(
-            conversation_id, model_id, _assistant_content(state)
+            conversation_id, model_id, assistant_content(state)
+        )
+        await log_usage(
+            user_id=user_id,
+            model_id=model_id,
+            capability=capability,
+            prompt_tokens=state.prompt_tokens,
+            completion_tokens=state.completion_tokens,
+            latency_ms=latency_ms,
+            status="error" if state.error else "success",
         )
         saved = True
     finally:
         if not saved:
+            latency_ms = int((time.monotonic() - started) * 1000)
             await _save_assistant_message(
                 conversation_id, model_id, "[错误] 流式连接中断"
             )
+            await log_usage(
+                user_id=user_id,
+                model_id=model_id,
+                capability=capability,
+                prompt_tokens=state.prompt_tokens,
+                completion_tokens=state.completion_tokens,
+                latency_ms=latency_ms,
+                status="error",
+            )
 
 
-def _non_stream_assistant_content(resp: JSONResponse) -> str:
+def _non_stream_result(resp: JSONResponse) -> tuple[str, dict[str, Any] | None, bool]:
     if resp.status_code != 200:
-        return f"[错误] HTTP {resp.status_code}"
+        return f"[错误] HTTP {resp.status_code}", None, True
     try:
         body = json.loads(resp.body)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return "[错误] 服务商返回了非 JSON 响应"
+        return "[错误] 服务商返回了非 JSON 响应", None, True
     choices = body.get("choices") or []
+    content = ""
     if choices and isinstance(choices[0], dict):
         message = choices[0].get("message") or {}
-        content = message.get("content")
-        if isinstance(content, str):
-            return content
-    return ""
+        if isinstance(message.get("content"), str):
+            content = message["content"]
+    usage = body.get("usage")
+    return content, usage if isinstance(usage, dict) else None, False
 
 
 @router.post("/conversations/{conversation_id}/messages")
@@ -320,17 +299,35 @@ async def create_message(
     )
     api_key = decrypt_api_key(provider.api_key_enc) if provider.api_key_enc else None
     url = f"{provider.base_url.rstrip('/')}/chat/completions"
+    started = time.monotonic()
 
     if data.stream:
         return StreamingResponse(
-            _stream_chat_and_persist(url, api_key, payload, conversation_id, model.id),
+            _stream_chat_and_persist(
+                url,
+                api_key,
+                payload,
+                conversation_id,
+                model.id,
+                user.id,
+                model.capability,
+                started,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     payload["stream"] = False
     resp = await _post_openai(url, api_key, payload)
-    await _save_assistant_message(
-        conversation_id, model.id, _non_stream_assistant_content(resp)
+    content, usage, is_error = _non_stream_result(resp)
+    await _save_assistant_message(conversation_id, model.id, content)
+    await log_usage(
+        user_id=user.id,
+        model_id=model.id,
+        capability=model.capability,
+        prompt_tokens=usage.get("prompt_tokens") if usage else None,
+        completion_tokens=usage.get("completion_tokens") if usage else None,
+        latency_ms=int((time.monotonic() - started) * 1000),
+        status="error" if is_error else "success",
     )
     return resp

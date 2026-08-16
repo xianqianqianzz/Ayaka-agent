@@ -7,6 +7,7 @@ from app.api.gateway import router as gateway_router
 from app.api.conversations import router as conversations_router
 from app.api.personas import router as personas_router
 from app.api.health import router as health_router
+from app.api.usage import router as usage_router
 from app.core.config import settings
 
 
@@ -26,6 +27,7 @@ app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(gateway_router, prefix="/api/v1", tags=["gateway"])
 app.include_router(conversations_router, prefix="/api/v1", tags=["conversations"])
 app.include_router(personas_router, prefix="/api/v1", tags=["personas"])
+app.include_router(usage_router, prefix="/api/v1", tags=["usage"])
 
 
 @app.get("/")
