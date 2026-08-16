@@ -6,7 +6,9 @@ class Settings(BaseSettings):
 
     app_name: str = "Ayaka AI Platform"
     database_url: str = "postgresql+asyncpg://ayaka:ayaka@localhost:5432/ayaka"
+    redis_url: str = "redis://localhost:6379/0"
     secret_key: str = "change-me"
+    allowed_origins: list[str] = []
 
 
 settings = Settings()

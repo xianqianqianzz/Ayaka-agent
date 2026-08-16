@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from typing import Any, AsyncIterator
 
@@ -27,6 +28,7 @@ from app.schemas.gateway import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _provider_out(p: Provider) -> ProviderOut:
@@ -335,6 +337,7 @@ async def _stream_openai_with_logging(
     payload: dict[str, Any],
     user_id: int,
     model_id: int,
+    model_name: str,
     capability: str,
     started: float,
 ) -> AsyncIterator[str]:
@@ -345,6 +348,7 @@ async def _stream_openai_with_logging(
             consume_sse_line(line, state)
             yield line
         latency_ms = int((time.monotonic() - started) * 1000)
+        status = "error" if state.error else "success"
         await log_usage(
             user_id=user_id,
             model_id=model_id,
@@ -352,8 +356,9 @@ async def _stream_openai_with_logging(
             prompt_tokens=state.prompt_tokens,
             completion_tokens=state.completion_tokens,
             latency_ms=latency_ms,
-            status="error" if state.error else "success",
+            status=status,
         )
+        logger.info("model=%s latency_ms=%s status=%s", model_name, latency_ms, status)
         logged = True
     finally:
         if not logged:
@@ -367,6 +372,7 @@ async def _stream_openai_with_logging(
                 latency_ms=latency_ms,
                 status="error",
             )
+            logger.info("model=%s latency_ms=%s status=error", model_name, latency_ms)
 
 
 @router.post("/chat/completions")
@@ -408,6 +414,7 @@ async def chat_completions(
                 payload,
                 user.id,
                 model.id,
+                model.name,
                 model.capability,
                 started,
             ),
@@ -416,13 +423,16 @@ async def chat_completions(
         )
     resp = await _post_openai(url, api_key, payload)
     usage, is_error = _post_openai_usage(resp)
+    latency_ms = int((time.monotonic() - started) * 1000)
+    status = "error" if is_error else "success"
     await log_usage(
         user_id=user.id,
         model_id=model.id,
         capability=model.capability,
         prompt_tokens=usage.get("prompt_tokens") if usage else None,
         completion_tokens=usage.get("completion_tokens") if usage else None,
-        latency_ms=int((time.monotonic() - started) * 1000),
-        status="error" if is_error else "success",
+        latency_ms=latency_ms,
+        status=status,
     )
+    logger.info("model=%s latency_ms=%s status=%s", model.name, latency_ms, status)
     return resp
