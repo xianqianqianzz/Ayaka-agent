@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import app.models  # noqa: F401  # 确保模型注册到 Base.metadata
 from app.api.auth import router as auth_router
 from app.api.gateway import router as gateway_router
+from app.api.personas import router as personas_router
 from app.api.health import router as health_router
 from app.core.config import settings
 
@@ -22,6 +23,7 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api/v1", tags=["health"])
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(gateway_router, prefix="/api/v1", tags=["gateway"])
+app.include_router(personas_router, prefix="/api/v1", tags=["personas"])
 
 
 @app.get("/")
