@@ -1,5 +1,3 @@
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,17 +6,9 @@ from app.api.auth import router as auth_router
 from app.api.gateway import router as gateway_router
 from app.api.health import router as health_router
 from app.core.config import settings
-from app.core.db import Base, engine
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-
-
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app = FastAPI(title=settings.app_name)
 
 # 开发阶段放开跨域；上线前应收紧为具体域名
 app.add_middleware(

@@ -32,7 +32,7 @@ def _provider_out(p: Provider) -> ProviderOut:
         name=p.name,
         kind=p.kind,
         base_url=p.base_url,
-        has_api_key=bool(p.api_key),
+        has_api_key=bool(p.api_key_enc),
         created_at=p.created_at,
     )
 
@@ -59,7 +59,7 @@ async def create_provider(
         name=data.name,
         kind=data.kind,
         base_url=data.base_url,
-        api_key=encrypt_api_key(data.api_key) if data.api_key else None,
+        api_key_enc=encrypt_api_key(data.api_key) if data.api_key else None,
     )
     db.add(provider)
     await db.commit()
@@ -84,7 +84,7 @@ async def update_provider(
     if data.base_url is not None:
         provider.base_url = data.base_url
     if data.api_key is not None:
-        provider.api_key = encrypt_api_key(data.api_key) if data.api_key else None
+        provider.api_key_enc = encrypt_api_key(data.api_key) if data.api_key else None
     await db.commit()
     await db.refresh(provider)
     return _provider_out(provider)
@@ -126,7 +126,7 @@ async def fetch_provider_models(
     provider = await db.get(Provider, provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider 不存在")
-    api_key = decrypt_api_key(provider.api_key) if provider.api_key else None
+    api_key = decrypt_api_key(provider.api_key_enc) if provider.api_key_enc else None
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     url = f"{provider.base_url.rstrip('/')}/models"
     try:
@@ -282,7 +282,7 @@ async def chat_completions(
     if data.max_tokens is not None:
         payload["max_tokens"] = data.max_tokens
 
-    api_key = decrypt_api_key(provider.api_key) if provider.api_key else None
+    api_key = decrypt_api_key(provider.api_key_enc) if provider.api_key_enc else None
     url = f"{provider.base_url.rstrip('/')}/chat/completions"
 
     if data.stream:
