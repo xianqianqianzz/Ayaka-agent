@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -212,6 +213,8 @@ async def _prepare_message_payload(
                 content=content,
             )
         )
+        # 让会话列表按最新活动排序（仅首条消息会触发改名，其余情况需显式刷新）
+        conversation.updated_at = datetime.now(timezone.utc)
         if conversation.title == "新对话" and len(history) == 0:
             conversation.title = content[:20]
         await db.commit()

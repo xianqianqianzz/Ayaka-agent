@@ -156,7 +156,7 @@ async def fetch_provider_models(
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     url = f"{provider.base_url.rstrip('/')}/models"
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=30.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)) as client:
             resp = await client.get(url, headers=headers)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"请求服务商失败：{exc}")
