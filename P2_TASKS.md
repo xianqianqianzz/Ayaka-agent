@@ -97,6 +97,7 @@ usage_logs(id, user_id FK, model_id FK NULL, capability VARCHAR(32),
 ## 2. 批次 D（DeepSeek，7 个任务，按序执行）
 
 > 环境：`backend/.venv`（Python 3.10）。每卡独立完成、独立验收；失败单独重跑。
+> 数据库：D1 起需要真实 PostgreSQL（D6 起还需要 Redis）。本机无 Docker 时先装 Docker Desktop，再 `docker compose -f deploy/docker-compose.yml up -d db redis`；或直接利用云服务器环境执行 D 批次。
 > 禁止：修改任何前端文件（D7 除外）；重构与本卡无关的代码；变更 §1 冻结契约。
 
 ### D1 Alembic 接入 + 目标 schema 一次性迁移
@@ -222,6 +223,8 @@ usage_logs(id, user_id FK, model_id FK NULL, capability VARCHAR(32),
 
 ## 7. 风险与备注
 
+- **D 批次环境前提**：本机（Windows）当前无 Docker / 本地 PG / Redis，二选一：装 Docker Desktop（与云端拓扑一致，推荐）；或在云服务器上直接执行 D 批次。
+- **安全提醒**：`deploy/docker-compose.yml` 将 PG(5432)/Redis(6379) 发布到公网且为弱默认口令（ayaka/ayaka）。若开发期直连云库，先改强口令或绑 127.0.0.1；此项列入 P2 收尾的 deploy 修正。
 - **D 批次最大风险**：D1 的 Alembic async 配置与迁移质量——已用精确 schema + 明确验收命令对冲；D1 不稳时后续卡全部暂停，先修 D1。
 - **K 批次的范围**最大，若需再切：K1 先单独交付验收，K2–K4 作为第二次交接。
 - **P3 预告**（展示分工规律的延续，本期不执行）：DeepSeek = jobs 表 / 进程内执行器 / 产物存储与 `/artifacts/`；复杂件（生图与 TTS 适配器各 1 家、adapter 抽象落地）归 Kimi 或主模型；Kimi 另负 studio 三工作台与任务历史墙视觉。
